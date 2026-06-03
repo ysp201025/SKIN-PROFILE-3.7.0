@@ -1,0 +1,22 @@
+{
+  "rules": {
+    "chat": {
+      "messages": {
+        ".read": true,
+        ".write": true
+      }
+    },
+    "voiceRooms": {
+      "$roomId": {
+        "participants": { ".read": true, ".write": true },
+        "signals":      { ".read": true, ".write": true }
+      }
+    },
+    "marketplace": {
+      "items": { ".read": true, ".write": true }
+    },
+    "users": {
+      "$uid": { ".read": true, ".write": true }
+    }
+  }
+}
