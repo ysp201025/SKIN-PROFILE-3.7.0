@@ -3969,7 +3969,7 @@ hatBottom.map.rotation = Math.PI;
                 captureComposite().then(screenshot=>{
                     const bpSnap = window._bpRef ? Object.assign({},window._bpRef) : {};
                     const state={
-                        version:6, screenshot:screenshot,
+                        version:7, screenshot:screenshot,
                         skinData:currentSkinDataURL,
                         rotationX:rotationX, rotationY:rotationY, zoom:zoom,
                         posX: posX, posY: posY,
@@ -3979,6 +3979,7 @@ hatBottom.map.rotation = Math.PI;
                         outlineOpacity:outlineOpacity, outlineColor:outlineColor,
                         brightness:currentBrightness,
                         filterState: JSON.parse(JSON.stringify(Object.assign({},window._fState||{}))),
+                        bgOnlyState: JSON.parse(JSON.stringify(Object.assign({},window._bgOnlyState||{}))),
                         headOnlyMode: window._headOnlyModeRef !== undefined ? window._headOnlyModeRef : true,
                         slimMode:     window._slimModeRef     !== undefined ? window._slimModeRef     : true,
                         bp: bpSnap,
@@ -4015,6 +4016,7 @@ hatBottom.map.rotation = Math.PI;
                     if(st.shadowsEnabled !== undefined){ shadowsEnabled=st.shadowsEnabled; applyShadows(); }
                     if(st.castShadowEnabled !== undefined){ castShadowEnabled=st.castShadowEnabled; applyCastShadow(); }
                     if(st.layer3DEnabled !== undefined){ layer3DEnabled=st.layer3DEnabled; applyLayer3D(); }
+                    if(window._restoreBgOnlyState){ window._restoreBgOnlyState(st.bgOnlyState); }
                     if(st.filterState && window._restoreFilterState){ window._restoreFilterState(st.filterState); }
                     if(statusEl) statusEl.innerHTML=`📂 Loaded: ${st.customName||st.date||'unknown'}`; setTimeout(()=>{ if(statusEl) statusEl.innerHTML=`✅ Ready`; },1500); } }
             function showLoadGallery(){ const saves=JSON.parse(localStorage.getItem('minecraft_head_named_saves')||'[]'); const listDiv=document.getElementById('savedItemsList'); if(!listDiv) return; if(saves.length===0){ listDiv.innerHTML='<p style="text-align:center;color:#aaa;"><span class="material-symbols-outlined">info</span> သိမ်းဆည်းထားသော Screenshot မရှိသေးပါ</p>'; document.getElementById('savedModal').classList.add('show'); return; } listDiv.innerHTML=''; saves.forEach((item,idx)=>{ const div=document.createElement('div'); div.className='saved-item'; const thumb=item.screenshot?`<img src="${item.screenshot}" class="saved-item-thumb" alt="screenshot">`:`<div class="saved-item-thumb" style="display:flex;align-items:center;justify-content:center;color:#8bc34a;"><span class="material-symbols-outlined">image</span></div>`; const displayName=item.customName&&item.customName!==''?item.customName:`Save_${new Date(item.timestamp).toLocaleString()}`; div.innerHTML=`<div class="saved-item-preview">${thumb}<div class="saved-item-info"><div class="saved-item-name"><span class="material-symbols-outlined">collections</span> ${displayName}</div><div class="saved-item-date">${item.date||new Date(item.timestamp).toLocaleString()}</div><div style="font-size:10px;color:#aaa;"><span class="material-symbols-outlined">palette</span> BG <span class="material-symbols-outlined">crop</span> Outline <span class="material-symbols-outlined">rotate_right</span> Rotation</div></div></div><div class="saved-item-buttons"><button class="button secondary small-btn load-saved-btn" data-idx="${idx}"><span class="material-symbols-outlined">download</span> Load</button><button class="button primary small-btn set-profile-btn" data-idx="${idx}"><span class="material-symbols-outlined">account_circle</span> ပုံတင်မယ်</button><button class="button destructive small-btn delete-saved-btn" data-idx="${idx}"><span class="material-symbols-outlined">delete</span> ဖျက်</button></div></div>`; listDiv.appendChild(div); }); document.getElementById('savedModal').classList.add('show'); document.querySelectorAll('.load-saved-btn').forEach(btn=>{ btn.addEventListener('click',(e)=>{ const idx=parseInt(btn.dataset.idx); const state=saves[idx]; if(state){ loadFullState(state); document.getElementById('savedModal').classList.remove('show'); } }); }); document.querySelectorAll('.delete-saved-btn').forEach(btn=>{ btn.addEventListener('click',(e)=>{ const idx=parseInt(btn.dataset.idx); saves.splice(idx,1); localStorage.setItem('minecraft_head_named_saves',JSON.stringify(saves)); showLoadGallery(); if(statusEl) statusEl.innerHTML=`🗑️ ဖျက်ပြီးပါပြီ`; setTimeout(()=>{ if(statusEl&&headGroup) statusEl.innerHTML=`✅ Ready`; },1000); }); }); document.querySelectorAll('.set-profile-btn').forEach(btn=>{ btn.addEventListener('click',(e)=>{ const idx=parseInt(btn.dataset.idx); const state=saves[idx]; if(state&&state.screenshot){ currentProfile.avatar=state.screenshot; if(saveProfileToLocal()){ document.getElementById('savedModal').classList.remove('show'); if(statusEl) statusEl.innerHTML=`🖼️ Profile ပုံ အဖြစ် သတ်မှတ်ပြီးပါပြီ`; setTimeout(()=>{ if(statusEl&&headGroup) statusEl.innerHTML=`✅ Ready`; },1500); } } }); }); }
@@ -5488,6 +5490,21 @@ hatBottom.map.rotation = Math.PI;
                 // ── Export fState globally for save/restore ──
                 window._fState = fState;
 
+                // ── Export bgOnlyState globally for save/restore ──
+                // (Each effect's "BG ONLY" toggle isn't part of fState, so it needs its
+                // own export/restore pair or saved images silently lose that setting.)
+                window._bgOnlyState = bgOnlyState;
+                window._restoreBgOnlyState = function(saved){
+                    if(!saved) saved={};
+                    BG_ONLY_MAP.forEach(([btnId,key])=>{
+                        bgOnlyState[key] = !!saved[key];
+                        const btn = document.getElementById(btnId);
+                        if(btn) btn.classList.toggle('on', bgOnlyState[key]);
+                    });
+                    updateRendererBgMode();
+                    if(hasBgOnlyActive()) syncBgCanvas();
+                };
+
                 // ── Restore filter state from saved data ──
                 window._restoreFilterState = function(saved){
                     // Merge saved values into fState, skip internal animation state
@@ -5595,17 +5612,28 @@ hatBottom.map.rotation = Math.PI;
             })();
             // ===== END HEAD FILTER SYSTEM =====
 
-            // ── captureComposite: renders 3D + CSS filter + overlay + tint → single PNG ──
+            // ── captureComposite: renders bg + 3D + CSS filter + outline + tint + overlay → single PNG ──
+            // Layer order below is intentionally kept identical to the live on-screen stacking
+            // order (see .canvas-stack z-index rules): bgEffectCanvas(0) < skinCanvas(1) <
+            // outlineOverlayCanvas(2) < canvasTintOverlay(4) < filterOverlayCanvas(5).
             function captureComposite(){
                 return new Promise(resolve=>{
                     renderer.render(scene3d,camera);
                     const src = document.getElementById('skinCanvas');
+                    const bgFx = document.getElementById('bgEffectCanvas');
                     const overlay = document.getElementById('filterOverlayCanvas');
                     const tint = document.getElementById('canvasTintOverlay');
                     const w = src.width, h = src.height;
                     const out = document.createElement('canvas');
                     out.width = w; out.height = h;
                     const ctx = out.getContext('2d');
+
+                    // 0. Background-only effects layer (z-index 0, behind the head).
+                    // Only present/visible when a "BG ONLY" effect is active; otherwise the
+                    // skin canvas itself already has an opaque background painted in.
+                    if(bgFx && bgFx.style.display !== 'none' && bgFx.width > 0){
+                        ctx.drawImage(bgFx, 0, 0, w, h);
+                    }
 
                     // 1. Draw 3D head with CSS filter applied via offscreen
                     const tmpImg = new Image();
@@ -5619,7 +5647,14 @@ hatBottom.map.rotation = Math.PI;
                         tc.filter = 'none';
                         ctx.drawImage(tmp,0,0,w,h);
 
-                        // 2. Tint overlay (color div)
+                        // 2. Sticker Outline overlay canvas (z-index 2, above head, below tint)
+                        const stickerOv = document.getElementById('outlineOverlayCanvas');
+                        if(stickerOv && stickerOv.style.display !== 'none' && stickerOv.width > 0){
+                            if(typeof drawStickerOutline === 'function') drawStickerOutline();
+                            ctx.drawImage(stickerOv, 0, 0, w, h);
+                        }
+
+                        // 3. Tint overlay (z-index 4, above outline)
                         if(tint && tint.style.display !== 'none'){
                             const op = parseFloat(tint.style.opacity)||0;
                             const bg = tint.style.background || tint.style.backgroundColor || '#ffffff';
@@ -5632,14 +5667,7 @@ hatBottom.map.rotation = Math.PI;
                             }
                         }
 
-                        // 3. Sticker Outline overlay canvas
-                        const stickerOv = document.getElementById('outlineOverlayCanvas');
-                        if(stickerOv && stickerOv.style.display !== 'none' && stickerOv.width > 0){
-                            if(typeof drawStickerOutline === 'function') drawStickerOutline();
-                            ctx.drawImage(stickerOv, 0, 0, w, h);
-                        }
-
-                        // 4. Overlay canvas (vignette, effects, rain, etc.)
+                        // 4. Overlay canvas (z-index 5, topmost: vignette, glow, rain, etc.)
                         if(overlay && overlay.width > 0){
                             // Scale overlay to match output canvas size
                             ctx.drawImage(overlay, 0, 0, w, h);
