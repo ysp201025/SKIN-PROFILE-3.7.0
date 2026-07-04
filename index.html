@@ -1769,34 +1769,28 @@
         .bg-only-toggle:active { opacity: 0.7; }
     </style>
     <!-- ============================================================ -->
-    <!-- FIREBASE SDK - Required for Real-time Multi-user Features     -->
-    <!-- Setup: https://console.firebase.google.com                    -->
-    <!-- 1. Create project → Add web app → Copy config below           -->
-    <!-- 2. Enable Realtime Database (test mode)                       -->
-    <!-- 3. Enable Storage (test mode)                                 -->
+    <!-- SUPABASE - Required for Real-time Multi-user Features         -->
+    <!-- Setup: https://supabase.com/dashboard                         -->
+    <!-- 1. Create project → Project Settings → API → copy URL + key   -->
+    <!-- 2. Run supabase/schema.sql in the SQL Editor                  -->
+    <!-- 3. Create a public "voice" Storage bucket (done by the SQL)   -->
     <!-- ============================================================ -->
-    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-database-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-storage-compat.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
     <script>
     // ============================================================
-    // 🔥 FIREBASE CONFIG — Replace with YOUR project's config!
-    // Get from: Firebase Console → Project Settings → Your apps
+    // 🟩 SUPABASE CONFIG — Replace with YOUR project's config!
+    // Get from: Supabase Dashboard → Project Settings → API
     // ============================================================
-    const firebaseConfig = {
-        apiKey: "YOUR_API_KEY",
-        authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-        databaseURL: "https://YOUR_PROJECT_ID-default-rtdb.firebaseio.com",
-        projectId: "YOUR_PROJECT_ID",
-        storageBucket: "YOUR_PROJECT_ID.appspot.com",
-        messagingSenderId: "YOUR_SENDER_ID",
-        appId: "YOUR_APP_ID"
+    const supabaseConfig = {
+        url: "https://uygitmmxzkfyqduxectu.supabase.co",       // e.g. https://xxxxxxxx.supabase.co
+        anonKey: "sb_publishable_HGaNKs5BiSUksm0VYxtXxw_faYobUDG"
     };
-    let firebaseReady = false;
+    let supabaseReady = false;
+    let supabase = null;
     try {
-        firebase.initializeApp(firebaseConfig);
-        firebaseReady = !firebaseConfig.apiKey.includes('YOUR_');
-    } catch(e) { console.warn('Firebase init failed:', e); }
+        supabase = window.supabase.createClient(supabaseConfig.url, supabaseConfig.anonKey);
+        supabaseReady = !supabaseConfig.url.includes('YOUR_') && !supabaseConfig.anonKey.includes('YOUR_');
+    } catch(e) { console.warn('Supabase init failed:', e); }
 
     // Generate or retrieve persistent user ID
     function getMyUID() {
@@ -1809,7 +1803,7 @@
     }
     const myUID = getMyUID();
 
-    // Helper: compress base64 image for Firebase storage
+    // Helper: compress base64 image before syncing to Supabase
     function compressBase64(base64, maxW=200, quality=0.75) {
         return new Promise(resolve => {
             if (!base64 || !base64.startsWith('data:')) { resolve(base64 || ''); return; }
@@ -3491,7 +3485,7 @@
             document.getElementById('removeAvatarBtn')?.addEventListener('click',()=>{ currentProfile.avatar=null; const preview=document.getElementById('avatarPreview'); preview.innerHTML='<span class="material-symbols-outlined" style="font-size:40px;">account_circle</span>'; document.getElementById('avatarInput').value=''; });
             document.getElementById('profileForm')?.addEventListener('submit',(e)=>{ e.preventDefault(); const name=document.getElementById('profileNameInput').value.trim(); if(!name){ alert('နာမည် မဖြစ်မနေ ထည့်ရပါမယ်'); return; } currentProfile.name=name; currentProfile.email=document.getElementById('profileEmailInput').value.trim(); currentProfile.phone=document.getElementById('profilePhoneInput').value.trim(); if(saveProfileToLocal()){ document.getElementById('profileModal').classList.remove('show'); if(statusEl) statusEl.innerHTML=`✅ ကိုယ်ရေးအချက်အလက် သိမ်းပြီးပါပြီ`; setTimeout(()=>{ if(statusEl&&headGroup) statusEl.innerHTML=`✅ Ready`; },1500); } });
             
-            // ==================== GLOBAL CHAT (Firebase Real-time) ====================
+            // ==================== GLOBAL CHAT (Supabase Real-time) ====================
             let chatMessages = []; // kept for rendering only
             let mediaRecorder = null;
             let audioChunks = [];
@@ -3537,10 +3531,22 @@
                 chatMessages.slice().forEach(([key, msg]) => renderSingleChatMsg(key, msg));
             }
 
-            function loadChatMessages(){
-                if (!firebaseReady) {
+            function mapChatRow(row){
+                return {
+                    type: row.type,
+                    senderName: row.sender_name,
+                    avatar: row.avatar,
+                    message: row.message,
+                    audioUrl: row.audio_url,
+                    senderUID: row.sender_uid,
+                    timestamp: row.created_at ? new Date(row.created_at).getTime() : Date.now()
+                };
+            }
+
+            async function loadChatMessages(){
+                if (!supabaseReady) {
                     const container = document.getElementById('chatMessages');
-                    if(container) container.innerHTML = '<p style="text-align:center;color:#ff9800;padding:20px;">⚠️ Firebase မ setup မလုပ်ရသေးပါ။ index.html ထဲ firebaseConfig ထည့်ပါ။</p>';
+                    if(container) container.innerHTML = '<p style="text-align:center;color:#ff9800;padding:20px;">⚠️ Supabase မ setup မလုပ်ရသေးပါ။ index.html ထဲ supabaseConfig ထည့်ပါ။</p>';
                     return;
                 }
                 const container = document.getElementById('chatMessages');
@@ -3548,14 +3554,29 @@
 
                 if (!chatListenerAttached) {
                     chatListenerAttached = true;
-                    const ref = firebase.database().ref('chat/messages').orderByChild('timestamp').limitToLast(100);
-                    ref.on('child_added', (snap) => {
-                        renderSingleChatMsg(snap.key, snap.val());
-                    });
-                    ref.on('child_removed', (snap) => {
-                        const el = document.getElementById('cmsg_'+snap.key);
-                        if (el) el.remove();
-                    });
+
+                    // Initial load: last 100 messages, oldest first so they render top-to-bottom correctly
+                    const { data, error } = await supabase
+                        .from('chat_messages')
+                        .select('*')
+                        .order('created_at', { ascending: false })
+                        .limit(100);
+                    if (!error && data && data.length) {
+                        data.slice().reverse().forEach(row => renderSingleChatMsg(String(row.id), mapChatRow(row)));
+                    } else if (container) {
+                        container.innerHTML = '<p style="text-align:center;color:#aaa;">No messages yet. Be the first to chat!</p>';
+                    }
+
+                    // Live updates
+                    supabase.channel('chat-messages')
+                        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages' }, (payload) => {
+                            renderSingleChatMsg(String(payload.new.id), mapChatRow(payload.new));
+                        })
+                        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'chat_messages' }, (payload) => {
+                            const el = document.getElementById('cmsg_'+payload.old.id);
+                            if (el) el.remove();
+                        })
+                        .subscribe();
                 }
             }
 
@@ -3564,24 +3585,24 @@
                 const message = input.value.trim();
                 if (!message) return;
                 if (!currentProfile.name || currentProfile.name.trim() === '') { alert('Please set your name in Profile first!'); openProfileModal(); return; }
-                if (!firebaseReady) { alert('Firebase မ setup မလုပ်ရသေးပါ!'); return; }
+                if (!supabaseReady) { alert('Supabase မ setup မလုပ်ရသေးပါ!'); return; }
                 input.value = '';
                 try {
-                    await firebase.database().ref('chat/messages').push({
+                    const { error } = await supabase.from('chat_messages').insert({
                         type: 'text',
-                        senderName: currentProfile.name,
+                        sender_name: currentProfile.name,
                         avatar: currentProfile.avatar || '',
                         message: message,
-                        senderUID: myUID,
-                        timestamp: firebase.database.ServerValue.TIMESTAMP
+                        sender_uid: myUID
                     });
+                    if (error) throw error;
                     if (statusEl) { statusEl.innerHTML = `💬 Message sent!`; setTimeout(()=>{ if(statusEl&&headGroup) statusEl.innerHTML=`✅ Ready`; }, 1500); }
                 } catch(e) { alert('Send failed: ' + e.message); input.value = message; }
             }
 
             async function startVoiceRecording(){
                 if (!currentProfile.name || currentProfile.name.trim() === '') { alert('Please set your name in Profile first!'); openProfileModal(); return; }
-                if (!firebaseReady) { alert('Firebase မ setup မလုပ်ရသေးပါ!'); return; }
+                if (!supabaseReady) { alert('Supabase မ setup မလုပ်ရသေးပါ!'); return; }
                 try {
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                     mediaRecorder = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg' });
@@ -3596,17 +3617,19 @@
                         if (statusEl) statusEl.innerHTML = `⏫ Voice message uploading...`;
                         try {
                             const ext = mediaRecorder.mimeType.includes('webm') ? 'webm' : 'ogg';
-                            const storageRef = firebase.storage().ref(`voice/${myUID}_${Date.now()}.${ext}`);
-                            await storageRef.put(audioBlob);
-                            const audioUrl = await storageRef.getDownloadURL();
-                            await firebase.database().ref('chat/messages').push({
+                            const path = `${myUID}_${Date.now()}.${ext}`;
+                            const { error: upErr } = await supabase.storage.from('voice').upload(path, audioBlob, { contentType: mediaRecorder.mimeType, upsert: false });
+                            if (upErr) throw upErr;
+                            const { data: urlData } = supabase.storage.from('voice').getPublicUrl(path);
+                            const audioUrl = urlData.publicUrl;
+                            const { error: insErr } = await supabase.from('chat_messages').insert({
                                 type: 'voice',
-                                senderName: currentProfile.name,
+                                sender_name: currentProfile.name,
                                 avatar: currentProfile.avatar || '',
-                                audioUrl: audioUrl,
-                                senderUID: myUID,
-                                timestamp: firebase.database.ServerValue.TIMESTAMP
+                                audio_url: audioUrl,
+                                sender_uid: myUID
                             });
+                            if (insErr) throw insErr;
                             if (statusEl) { statusEl.innerHTML = `🎤 Voice message sent!`; setTimeout(()=>{ if(statusEl&&headGroup) statusEl.innerHTML=`✅ Ready`; }, 1500); }
                         } catch(e) { alert('Upload failed: ' + e.message); if(statusEl) statusEl.innerHTML=`✅ Ready`; }
                     };
@@ -3661,7 +3684,7 @@
                 if(currentProfile.email && currentProfile.email.toLowerCase() === 'aerxcv12@gmail.com'){
                     if(currentUser.coins !== 9999999){
                         currentUser.coins = 9999999;
-                        if(firebaseReady) firebase.database().ref(`users/${myUID}/coins`).set(9999999);
+                        if(supabaseReady) supabase.rpc('set_user_coins', { p_uid: myUID, p_coins: 9999999 });
                         localStorage.setItem('minecraft_shop_user_v2', JSON.stringify({ coins: 9999999, purchasedItems: currentUser.purchasedItems || [] }));
                         updateCoinUI();
                         if(statusEl) statusEl.innerHTML = `👑 ADMIN BONUS: 9,999,999 Coins awarded!`;
@@ -5731,7 +5754,10 @@ hatBottom.map.rotation = Math.PI;
             window.addEventListener('resize',resizeCanvas);
             updateRotationSliders(); updateBrightness();
             
-            // ==================== REAL VOICE CHAT (Firebase WebRTC Mesh) ====================
+            // ==================== REAL VOICE CHAT (Supabase Realtime WebRTC Mesh) ====================
+            // Signaling (offer/answer/ice-candidates) travels over Realtime Broadcast.
+            // Join/leave detection uses Realtime Presence, which auto-untracks on
+            // disconnect/tab-close — the equivalent of Firebase's onDisconnect().
             let localVoiceStream = null;
             let voicePeers = {};          // { uid: RTCPeerConnection }
             let voiceAudios = {};         // { uid: HTMLAudioElement }
@@ -5739,17 +5765,19 @@ hatBottom.map.rotation = Math.PI;
             let currentVoiceRoom = null;
             let isMicMutedVC = false;
             let isSpeakerMutedVC = false;
-            let participantsWhenJoined = new Set();
             let iceCandidateQueues = {};  // { uid: [RTCIceCandidate] }
+            let voiceRoomChannel = null;  // active Supabase Realtime channel for the room
 
             // Backward-compat alias
             let localStreamVC = null;
             let voiceParticipantsVC = [];
 
             async function sendVoiceSignal(toUID, type, data) {
-                if (!currentVoiceRoom || !firebaseReady) return;
-                await firebase.database().ref(`voiceRooms/${currentVoiceRoom}/signals/${toUID}`).push({
-                    fromUID: myUID, type, data, ts: Date.now()
+                if (!currentVoiceRoom || !supabaseReady || !voiceRoomChannel) return;
+                await voiceRoomChannel.send({
+                    type: 'broadcast',
+                    event: 'signal',
+                    payload: { fromUID: myUID, toUID, type, data }
                 });
             }
 
@@ -5828,7 +5856,7 @@ hatBottom.map.rotation = Math.PI;
 
             async function joinVoiceRoomVC(roomId) {
                 if (!currentProfile.name || currentProfile.name.trim() === '') { alert('Voice Chat အတွက် Profile တွင် နာမည် ထည့်ပါ။'); openProfileModal(); return; }
-                if (!firebaseReady) { alert('Firebase မ setup မလုပ်ရသေးပါ!'); return; }
+                if (!supabaseReady) { alert('Supabase မ setup မလုပ်ရသေးပါ!'); return; }
                 if (currentVoiceRoom === roomId) return;
                 if (currentVoiceRoom) await leaveVoiceRoomVC();
 
@@ -5837,63 +5865,78 @@ hatBottom.map.rotation = Math.PI;
                     localStreamVC = localVoiceStream;
                     if (isMicMutedVC) localVoiceStream.getTracks().forEach(t => t.enabled = false);
                     currentVoiceRoom = roomId;
-                    const db = firebase.database();
 
-                    // 1. Snapshot existing participants BEFORE joining
-                    const snap = await db.ref(`voiceRooms/${roomId}/participants`).once('value');
-                    participantsWhenJoined = new Set();
-                    snap.forEach(child => {
-                        if (child.key !== myUID) {
-                            participantsWhenJoined.add(child.key);
-                            voiceRoomParticipants[child.key] = child.val();
+                    const myPresence = {
+                        name: currentProfile.name, avatar: currentProfile.avatar || '',
+                        micOn: !isMicMutedVC, speakerOn: !isSpeakerMutedVC
+                    };
+
+                    const channel = supabase.channel(`voice-room-${roomId}`, {
+                        config: { presence: { key: myUID }, broadcast: { self: false } }
+                    });
+                    voiceRoomChannel = channel;
+
+                    // 1. Signals addressed to me
+                    channel.on('broadcast', { event: 'signal' }, async ({ payload }) => {
+                        if (!currentVoiceRoom || !payload || payload.toUID !== myUID) return;
+                        if (payload.fromUID && payload.type) await handleVoiceSignal(payload.fromUID, payload.type, payload.data);
+                    });
+
+                    // 2. Lightweight mic/speaker state updates from other participants
+                    channel.on('broadcast', { event: 'state' }, ({ payload }) => {
+                        if (!currentVoiceRoom || !payload || payload.uid === myUID) return;
+                        if (voiceRoomParticipants[payload.uid]) {
+                            voiceRoomParticipants[payload.uid].micOn = payload.micOn;
+                            voiceRoomParticipants[payload.uid].speakerOn = payload.speakerOn;
+                            updateVoiceUIVC();
                         }
                     });
 
-                    // 2. Write my presence
-                    const myPresence = {
-                        name: currentProfile.name, avatar: currentProfile.avatar || '',
-                        micOn: !isMicMutedVC, speakerOn: !isSpeakerMutedVC,
-                        joinedAt: firebase.database.ServerValue.TIMESTAMP
-                    };
-                    await db.ref(`voiceRooms/${roomId}/participants/${myUID}`).set(myPresence);
-                    db.ref(`voiceRooms/${roomId}/participants/${myUID}`).onDisconnect().remove();
-                    db.ref(`voiceRooms/${roomId}/signals/${myUID}`).onDisconnect().remove();
-
-                    // 3. Listen for signals to me
-                    db.ref(`voiceRooms/${roomId}/signals/${myUID}`).on('child_added', async (snap) => {
+                    // 3. Presence sync = participants already in the room when I joined (no offer from me)
+                    channel.on('presence', { event: 'sync' }, () => {
                         if (!currentVoiceRoom) return;
-                        const sig = snap.val();
-                        if (sig && sig.fromUID && sig.type) await handleVoiceSignal(sig.fromUID, sig.type, sig.data);
-                        snap.ref.remove();
+                        const state = channel.presenceState();
+                        Object.keys(state).forEach(uid => {
+                            if (uid === myUID || !state[uid][0]) return;
+                            const p = state[uid][0];
+                            voiceRoomParticipants[uid] = { name: p.name, avatar: p.avatar, micOn: p.micOn, speakerOn: p.speakerOn };
+                        });
+                        updateVoiceUIVC();
                     });
 
-                    // 4. Listen for participant changes
-                    db.ref(`voiceRooms/${roomId}/participants`).on('child_added', async (snap) => {
-                        if (!currentVoiceRoom) return;
-                        if (snap.key === myUID) return;
-                        voiceRoomParticipants[snap.key] = snap.val();
+                    // 4. Presence join = a NEW participant arrived after me -> I (already here) initiate the offer
+                    channel.on('presence', { event: 'join' }, async ({ key, newPresences }) => {
+                        if (!currentVoiceRoom || key === myUID) return;
+                        const p = newPresences[0];
+                        if (!p) return;
+                        const isNewPeer = !voicePeers[key];
+                        voiceRoomParticipants[key] = { name: p.name, avatar: p.avatar, micOn: p.micOn, speakerOn: p.speakerOn };
                         updateVoiceUIVC();
-                        // Create offer for NEW participants (not those already there when I joined)
-                        if (!participantsWhenJoined.has(snap.key) && !voicePeers[snap.key]) {
-                            const pc = createVoicePeerConnection(snap.key);
+                        if (isNewPeer) {
+                            const pc = createVoicePeerConnection(key);
                             try {
                                 const offer = await pc.createOffer();
                                 await pc.setLocalDescription(offer);
-                                await sendVoiceSignal(snap.key, 'offer', { sdp: offer.sdp, type: offer.type });
+                                await sendVoiceSignal(key, 'offer', { sdp: offer.sdp, type: offer.type });
                             } catch(e) { console.error('Create offer error:', e); }
                         }
                     });
-                    db.ref(`voiceRooms/${roomId}/participants`).on('child_removed', (snap) => {
-                        if (!currentVoiceRoom) return;
-                        delete voiceRoomParticipants[snap.key];
-                        closeVoicePeer(snap.key);
+
+                    // 5. Presence leave = participant disconnected (tab close, network drop, or explicit leave)
+                    channel.on('presence', { event: 'leave' }, ({ key }) => {
+                        if (!currentVoiceRoom || key === myUID) return;
+                        delete voiceRoomParticipants[key];
+                        closeVoicePeer(key);
                         updateVoiceUIVC();
                     });
-                    db.ref(`voiceRooms/${roomId}/participants`).on('child_changed', (snap) => {
-                        if (!currentVoiceRoom) return;
-                        if (snap.key === myUID) return;
-                        voiceRoomParticipants[snap.key] = snap.val();
-                        updateVoiceUIVC();
+
+                    await new Promise((resolve) => {
+                        channel.subscribe(async (status) => {
+                            if (status === 'SUBSCRIBED') {
+                                await channel.track(myPresence);
+                                resolve();
+                            }
+                        });
                     });
 
                     voiceRoomParticipants[myUID] = myPresence;
@@ -5905,15 +5948,16 @@ hatBottom.map.rotation = Math.PI;
 
             async function leaveVoiceRoomVC() {
                 if (!currentVoiceRoom) return;
-                const db = firebase.database();
-                const roomId = currentVoiceRoom;
-                db.ref(`voiceRooms/${roomId}/participants`).off();
-                db.ref(`voiceRooms/${roomId}/signals/${myUID}`).off();
-                try { await db.ref(`voiceRooms/${roomId}/participants/${myUID}`).remove(); } catch(e){}
-                try { await db.ref(`voiceRooms/${roomId}/signals/${myUID}`).remove(); } catch(e){}
+                try {
+                    if (voiceRoomChannel) {
+                        await voiceRoomChannel.untrack();
+                        await supabase.removeChannel(voiceRoomChannel);
+                    }
+                } catch(e){}
+                voiceRoomChannel = null;
                 Object.keys(voicePeers).forEach(uid => closeVoicePeer(uid));
                 if (localVoiceStream) { localVoiceStream.getTracks().forEach(t => t.stop()); localVoiceStream = null; localStreamVC = null; }
-                currentVoiceRoom = null; voiceRoomParticipants = {}; participantsWhenJoined = new Set(); iceCandidateQueues = {};
+                currentVoiceRoom = null; voiceRoomParticipants = {}; iceCandidateQueues = {};
                 voiceParticipantsVC = [];
                 updateVoiceUIVC();
                 if (statusEl) { statusEl.innerHTML = `🔇 Voice Room မှ ထွက်ပြီးပါပြီ`; setTimeout(()=>{ if(statusEl) statusEl.innerHTML=`✅ Ready`; }, 2000); }
@@ -5924,7 +5968,9 @@ hatBottom.map.rotation = Math.PI;
                 isMicMutedVC = !isMicMutedVC;
                 if (localVoiceStream) localVoiceStream.getAudioTracks().forEach(t => t.enabled = !isMicMutedVC);
                 if (voiceRoomParticipants[myUID]) voiceRoomParticipants[myUID].micOn = !isMicMutedVC;
-                if (firebaseReady && currentVoiceRoom) firebase.database().ref(`voiceRooms/${currentVoiceRoom}/participants/${myUID}/micOn`).set(!isMicMutedVC);
+                if (supabaseReady && currentVoiceRoom && voiceRoomChannel) {
+                    voiceRoomChannel.send({ type: 'broadcast', event: 'state', payload: { uid: myUID, micOn: !isMicMutedVC, speakerOn: !isSpeakerMutedVC } });
+                }
                 const btn = document.getElementById('micToggleBtn');
                 if (btn) btn.innerHTML = isMicMutedVC ? '<span class="material-symbols-outlined">mic_off</span> Mic OFF' : '<span class="material-symbols-outlined">mic</span> Mic ON';
                 updateVoiceUIVC();
@@ -5934,7 +5980,9 @@ hatBottom.map.rotation = Math.PI;
                 isSpeakerMutedVC = !isSpeakerMutedVC;
                 Object.values(voiceAudios).forEach(a => { a.muted = isSpeakerMutedVC; });
                 if (voiceRoomParticipants[myUID]) voiceRoomParticipants[myUID].speakerOn = !isSpeakerMutedVC;
-                if (firebaseReady && currentVoiceRoom) firebase.database().ref(`voiceRooms/${currentVoiceRoom}/participants/${myUID}/speakerOn`).set(!isSpeakerMutedVC);
+                if (supabaseReady && currentVoiceRoom && voiceRoomChannel) {
+                    voiceRoomChannel.send({ type: 'broadcast', event: 'state', payload: { uid: myUID, micOn: !isMicMutedVC, speakerOn: !isSpeakerMutedVC } });
+                }
                 const btn = document.getElementById('speakerToggleBtn');
                 if (btn) btn.innerHTML = isSpeakerMutedVC ? '<span class="material-symbols-outlined">volume_off</span> Speaker OFF' : '<span class="material-symbols-outlined">volume_up</span> Speaker ON';
                 updateVoiceUIVC();
@@ -5969,65 +6017,100 @@ hatBottom.map.rotation = Math.PI;
 
             // Compat alias needed by event listeners below
             function initVoiceCallbacks() {
-                if (!firebaseReady) {
+                if (!supabaseReady) {
                     const vc = document.getElementById('voiceParticipants');
-                    if(vc) vc.innerHTML = '<p style="text-align:center;color:#ff9800;">⚠️ Firebase setup လိုအပ်သည်</p>';
+                    if(vc) vc.innerHTML = '<p style="text-align:center;color:#ff9800;">⚠️ Supabase setup လိုအပ်သည်</p>';
                 }
             }
             
-            // ==================== SHOP SYSTEM (Firebase Real-time) ====================
+            // ==================== SHOP SYSTEM (Supabase Real-time) ====================
             let marketplaceItems = [];
             let selectedPostState = null;
             let shopListenerActive = false;
 
-            function loadShopData() {
+            let userCoinsChannel = null;
+
+            function mapMarketplaceRow(row){
+                return {
+                    itemId: row.id, id: row.id,
+                    sellerUID: row.seller_uid, sellerName: row.seller_name, sellerAvatar: row.seller_avatar,
+                    itemName: row.item_name, desc: row.desc, price: row.price,
+                    screenshot: row.screenshot, previewImages: row.preview_images || [],
+                    fullState: row.full_state, isStorageFile: row.is_storage_file,
+                    fileName: row.file_name, fileExt: row.file_ext,
+                    timestamp: row.created_at ? new Date(row.created_at).getTime() : Date.now()
+                };
+            }
+
+            async function loadShopData() {
                 // Load user data locally first
                 const savedLocal = localStorage.getItem('minecraft_shop_user_v2');
                 if (savedLocal) { try { const d=JSON.parse(savedLocal); currentUser.coins=d.coins||60; if(d.purchasedItems) currentUser.purchasedItems=d.purchasedItems; } catch(e){} }
                 if (!currentUser.coins) currentUser.coins = 60;
                 if (!currentUser.purchasedItems) currentUser.purchasedItems = [];
 
-                if (!firebaseReady) {
+                if (!supabaseReady) {
                     updateCoinUI();
                     const grid = document.getElementById('marketplaceGrid');
-                    if (grid) grid.innerHTML = '<p style="text-align:center;color:#ff9800;padding:20px;">⚠️ Firebase setup လိုအပ်သည်</p>';
+                    if (grid) grid.innerHTML = '<p style="text-align:center;color:#ff9800;padding:20px;">⚠️ Supabase setup လိုအပ်သည်</p>';
                     return;
                 }
 
-                const db = firebase.database();
+                // Sync coins with Supabase (create the row if it doesn't exist yet)
+                let { data: userRow } = await supabase.from('users').select('coins, email_bonus').eq('uid', myUID).maybeSingle();
+                if (!userRow) {
+                    const { data: inserted } = await supabase.from('users').insert({ uid: myUID, coins: currentUser.coins || 60 }).select('coins, email_bonus').single();
+                    userRow = inserted || { coins: currentUser.coins || 60, email_bonus: false };
+                } else {
+                    currentUser.coins = userRow.coins;
+                }
 
-                // Sync coins with Firebase
-                db.ref(`users/${myUID}/coins`).once('value').then(snap => {
-                    if (snap.val() !== null) { currentUser.coins = snap.val(); }
-                    else { db.ref(`users/${myUID}/coins`).set(currentUser.coins || 60); }
-                    // Admin bonus
-                    if (currentProfile.email === 'aerxcv12@gmail.com') {
-                        currentUser.coins = 9999999; db.ref(`users/${myUID}/coins`).set(9999999);
-                    } else if (currentProfile.email && currentProfile.email.includes('@')) {
-                        db.ref(`users/${myUID}/emailBonus`).once('value').then(s => {
-                            if (!s.val()) { currentUser.coins += 60; db.ref(`users/${myUID}/emailBonus`).set(true); db.ref(`users/${myUID}/coins`).set(currentUser.coins); saveShopUser(); }
-                        });
-                    }
-                    updateCoinUI();
-                });
+                // Admin bonus
+                if (currentProfile.email === 'aerxcv12@gmail.com') {
+                    currentUser.coins = 9999999;
+                    await supabase.rpc('set_user_coins', { p_uid: myUID, p_coins: 9999999 });
+                } else if (currentProfile.email && currentProfile.email.includes('@') && !userRow.email_bonus) {
+                    currentUser.coins += 60;
+                    await supabase.from('users').update({ email_bonus: true, coins: currentUser.coins }).eq('uid', myUID);
+                    saveShopUser();
+                }
+                updateCoinUI();
 
                 // Listen for real-time coin changes (e.g. when someone buys your item)
-                db.ref(`users/${myUID}/coins`).on('value', snap => {
-                    if (snap.val() !== null && snap.val() !== currentUser.coins) {
-                        currentUser.coins = snap.val(); updateCoinUI();
-                        localStorage.setItem('minecraft_shop_user_v2', JSON.stringify({ coins: currentUser.coins, purchasedItems: currentUser.purchasedItems }));
-                    }
-                });
+                if (userCoinsChannel) { try { supabase.removeChannel(userCoinsChannel); } catch(e){} }
+                userCoinsChannel = supabase.channel(`user-coins-${myUID}`)
+                    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'users', filter: `uid=eq.${myUID}` }, (payload) => {
+                        if (payload.new.coins !== undefined && payload.new.coins !== currentUser.coins) {
+                            currentUser.coins = payload.new.coins; updateCoinUI();
+                            localStorage.setItem('minecraft_shop_user_v2', JSON.stringify({ coins: currentUser.coins, purchasedItems: currentUser.purchasedItems }));
+                        }
+                    })
+                    .subscribe();
 
                 // Real-time marketplace listener
                 if (!shopListenerActive) {
                     shopListenerActive = true;
-                    db.ref('marketplace/items').on('value', snap => {
-                        marketplaceItems = [];
-                        snap.forEach(child => { marketplaceItems.push({ firebaseKey: child.key, id: child.key, ...child.val() }); });
-                        marketplaceItems.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-                        renderMarketplace();
-                    });
+
+                    const { data: items } = await supabase.from('marketplace_items').select('*').order('created_at', { ascending: false });
+                    marketplaceItems = (items || []).map(mapMarketplaceRow);
+                    renderMarketplace();
+
+                    supabase.channel('marketplace-items')
+                        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'marketplace_items' }, (payload) => {
+                            marketplaceItems.unshift(mapMarketplaceRow(payload.new));
+                            marketplaceItems.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+                            renderMarketplace();
+                        })
+                        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'marketplace_items' }, (payload) => {
+                            const idx = marketplaceItems.findIndex(i => i.id === payload.new.id);
+                            if (idx !== -1) marketplaceItems[idx] = mapMarketplaceRow(payload.new);
+                            renderMarketplace();
+                        })
+                        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'marketplace_items' }, (payload) => {
+                            marketplaceItems = marketplaceItems.filter(i => i.id !== payload.old.id);
+                            renderMarketplace();
+                        })
+                        .subscribe();
                 }
 
                 updateCoinUI();
@@ -6035,12 +6118,12 @@ hatBottom.map.rotation = Math.PI;
 
             function saveShopUser() {
                 localStorage.setItem('minecraft_shop_user_v2', JSON.stringify({ coins: currentUser.coins, purchasedItems: currentUser.purchasedItems }));
-                if (firebaseReady) firebase.database().ref(`users/${myUID}/coins`).set(currentUser.coins);
+                if (supabaseReady) supabase.rpc('set_user_coins', { p_uid: myUID, p_coins: currentUser.coins });
                 updateCoinUI();
             }
 
             function updateCoinUI() { const el=document.getElementById('coinDisplay'); if(el) el.innerHTML=(currentUser.coins||0).toLocaleString(); }
-            function saveMarketplace() {} // no-op: Firebase handles this now
+            function saveMarketplace() {} // no-op: Supabase handles this now
 
             function renderGallerySelection(containerId){
                 const gallery = JSON.parse(localStorage.getItem('minecraft_head_named_saves')||'[]');
@@ -6058,7 +6141,7 @@ hatBottom.map.rotation = Math.PI;
 
             async function createPost(){
                 if (!currentProfile.name || currentProfile.name.trim() === '') { alert('Profile နာမည် ထည့်ပါ!'); openProfileModal(); return; }
-                if (!firebaseReady) { alert('Firebase setup လိုအပ်သည်!'); return; }
+                if (!supabaseReady) { alert('Supabase setup လိုအပ်သည်!'); return; }
                 if(!selectedPostState){ alert("Select an item!"); return; }
                 const name = document.getElementById('postItemName').value.trim();
                 const desc = document.getElementById('postDesc').value.trim();
@@ -6069,18 +6152,17 @@ hatBottom.map.rotation = Math.PI;
                 try {
                     const thumb = await compressBase64(selectedPostState.screenshot, 300, 0.8);
                     const isStorageFile = !!(selectedPostState.storageFile);
-                    const item = {
-                        sellerUID: myUID,
-                        sellerName: currentProfile.name,
-                        sellerAvatar: await compressBase64(currentProfile.avatar, 80, 0.8),
-                        itemName: name, desc, price,
+                    const { error } = await supabase.from('marketplace_items').insert({
+                        seller_uid: myUID,
+                        seller_name: currentProfile.name,
+                        seller_avatar: await compressBase64(currentProfile.avatar, 80, 0.8),
+                        item_name: name, desc, price,
                         screenshot: thumb,
-                        fullState: selectedPostState,
-                        isStorageFile,
-                        fileExt: isStorageFile ? (selectedPostState.ext || 'mcaddon') : null,
-                        timestamp: firebase.database.ServerValue.TIMESTAMP
-                    };
-                    await firebase.database().ref('marketplace/items').push(item);
+                        full_state: selectedPostState,
+                        is_storage_file: isStorageFile,
+                        file_ext: isStorageFile ? (selectedPostState.ext || 'mcaddon') : null
+                    });
+                    if (error) throw error;
                     document.getElementById('postModal').style.display='none';
                     selectedPostState=null;
                     if(statusEl) { statusEl.innerHTML=`✅ "${name}" တင်ပြီးပါပြီ`; setTimeout(()=>{ if(statusEl&&headGroup) statusEl.innerHTML=`✅ Ready`; },2000); }
@@ -6111,7 +6193,7 @@ hatBottom.map.rotation = Math.PI;
                         actions.innerHTML = `<button class="button edit-white small-btn" style="min-width:36px;"><span class="material-symbols-outlined" style="font-size:14px;">edit</span></button><button class="button destructive small-btn" style="min-width:36px;"><span class="material-symbols-outlined" style="font-size:14px;">delete</span></button>`;
                         actions.querySelector('.button.edit-white').onclick=(e)=>{ e.stopPropagation(); openEditModal(item); };
                         actions.querySelector('.button.destructive').onclick=async (e)=>{ e.stopPropagation(); if(confirm("Delete?")){
-                            try { await firebase.database().ref(`marketplace/items/${item.firebaseKey}`).remove(); } catch(err){ alert('Delete failed: '+err.message); }
+                            try { const { error } = await supabase.from('marketplace_items').delete().eq('id', item.itemId); if (error) throw error; } catch(err){ alert('Delete failed: '+err.message); }
                         }};
                         div.appendChild(actions);
                     }
@@ -6151,7 +6233,7 @@ hatBottom.map.rotation = Math.PI;
                     const actions=document.createElement('div'); actions.className='shop-item-actions';
                     actions.innerHTML=`<button class="button edit-white small-btn" style="min-width:36px;"><span class="material-symbols-outlined" style="font-size:14px;">edit</span></button><button class="button destructive small-btn" style="min-width:36px;"><span class="material-symbols-outlined" style="font-size:14px;">delete</span></button>`;
                     actions.querySelector('.button.edit-white').onclick=(e)=>{ e.stopPropagation(); openEditModal(item); };
-                    actions.querySelector('.button.destructive').onclick=async (e)=>{ e.stopPropagation(); if(confirm("Delete?")){ try{ await firebase.database().ref(`marketplace/items/${item.firebaseKey}`).remove(); }catch(err){ alert('Delete failed: '+err.message); } }};
+                    actions.querySelector('.button.destructive').onclick=async (e)=>{ e.stopPropagation(); if(confirm("Delete?")){ try{ const { error } = await supabase.from('marketplace_items').delete().eq('id', item.itemId); if (error) throw error; }catch(err){ alert('Delete failed: '+err.message); } }};
                     div.appendChild(actions);
                     grid.appendChild(div);
                 });
@@ -6161,7 +6243,7 @@ hatBottom.map.rotation = Math.PI;
                 document.getElementById('editPostItemName').value = item.itemName;
                 document.getElementById('editPostDesc').value = item.desc || '';
                 document.getElementById('editPostPrice').value = item.price;
-                window.editingItemFirebaseKey = item.firebaseKey;
+                window.editingItemId = item.itemId;
                 renderGallerySelection('editGallerySelectionList');
                 document.getElementById('editPostModal').style.display='flex';
             }
@@ -6171,18 +6253,19 @@ hatBottom.map.rotation = Math.PI;
                 const desc = document.getElementById('editPostDesc').value.trim();
                 const price = parseInt(document.getElementById('editPostPrice').value);
                 if(!name || price<1) return alert("Valid data required");
-                if (!firebaseReady) { alert('Firebase setup လိုအပ်သည်!'); return; }
+                if (!supabaseReady) { alert('Supabase setup လိုအပ်သည်!'); return; }
                 try {
-                    const updates = { itemName: name, desc, price };
+                    const updates = { item_name: name, desc, price };
                     if (selectedPostState) {
                         updates.screenshot = await compressBase64(selectedPostState.screenshot, 300, 0.8);
-                        updates.fullState = selectedPostState;
+                        updates.full_state = selectedPostState;
                     }
-                    await firebase.database().ref(`marketplace/items/${window.editingItemFirebaseKey}`).update(updates);
+                    const { error } = await supabase.from('marketplace_items').update(updates).eq('id', window.editingItemId);
+                    if (error) throw error;
                     if(statusEl) { statusEl.innerHTML=`✏️ Updated "${name}"`; setTimeout(()=>{ if(statusEl&&headGroup) statusEl.innerHTML=`✅ Ready`; },2000); }
                 } catch(e) { alert('Update failed: ' + e.message); }
                 document.getElementById('editPostModal').style.display='none';
-                window.editingItemFirebaseKey = null; selectedPostState = null;
+                window.editingItemId = null; selectedPostState = null;
             }
 
             let pendingBuyItem = null;
@@ -6198,26 +6281,25 @@ hatBottom.map.rotation = Math.PI;
 
             async function executePurchase(){
                 if(!pendingBuyItem) return;
-                if (!firebaseReady) { alert('Firebase setup လိုအပ်သည်!'); return; }
+                if (!supabaseReady) { alert('Supabase setup လိုအပ်သည်!'); return; }
                 const item = pendingBuyItem;
                 const confirmBtn = document.getElementById('confirmBuyBtn');
                 if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = 'Processing...'; }
                 try {
-                    const db = firebase.database();
-                    // Atomic coin deduction from buyer
-                    const buyerResult = await db.ref(`users/${myUID}/coins`).transaction(coins => {
-                        const c = (coins === null) ? (currentUser.coins || 60) : coins;
-                        if (c < item.price) return; // abort
-                        return c - item.price;
+                    // Atomic purchase (deduct buyer, credit seller, delete listing) via a Postgres
+                    // function — the equivalent of Firebase's ref().transaction() for RTDB.
+                    const { data, error } = await supabase.rpc('purchase_marketplace_item', {
+                        p_item_id: item.itemId, p_buyer_uid: myUID
                     });
-                    if (!buyerResult.committed) { alert(`Coins မလုံလောက်ပါ! ${item.price} လိုအပ်သည်`); return; }
-                    currentUser.coins = buyerResult.snapshot.val();
-                    // Credit seller coins
-                    if (item.sellerUID && item.sellerUID !== myUID) {
-                        await db.ref(`users/${item.sellerUID}/coins`).transaction(c => (c || 0) + item.price);
+                    if (error) {
+                        const msg = error.message || '';
+                        if (msg.includes('INSUFFICIENT_COINS')) { alert(`Coins မလုံလောက်ပါ! ${item.price} လိုအပ်သည်`); }
+                        else if (msg.includes('CANNOT_BUY_OWN_ITEM')) { alert('Cannot buy your own item'); }
+                        else if (msg.includes('ITEM_NOT_FOUND')) { alert('This item is no longer available.'); }
+                        else { alert('Purchase failed: ' + msg); }
+                        return;
                     }
-                    // Remove from marketplace
-                    await db.ref(`marketplace/items/${item.firebaseKey}`).remove();
+                    currentUser.coins = data.buyer_coins;
                     // Add to local purchases
                     currentUser.purchasedItems.push({ ...item, boughtAt: Date.now() });
                     saveShopUser();
@@ -6486,7 +6568,7 @@ hatBottom.map.rotation = Math.PI;
                 const isStorageMode = storageSection && storageSection.style.display !== 'none';
                 if(isStorageMode){
                     if(!window._storagePostFile){ alert("Storage File ရွေးပါ!"); return; }
-                    if (!firebaseReady) { alert('Firebase setup လိုအပ်သည်!'); return; }
+                    if (!supabaseReady) { alert('Supabase setup လိုအပ်သည်!'); return; }
                     const name = document.getElementById('postItemName').value.trim();
                     const desc = document.getElementById('postDesc').value.trim();
                     const price = parseInt(document.getElementById('postPrice').value);
@@ -6499,17 +6581,17 @@ hatBottom.map.rotation = Math.PI;
                     try {
                         const compressedCover = await compressBase64(coverImg, 300, 0.8);
                         const compressedPreviews = await Promise.all(previewImgs.map(img => compressBase64(img, 300, 0.8)));
-                        await firebase.database().ref('marketplace/items').push({
-                            sellerUID: myUID,
-                            sellerName: currentProfile.name,
-                            sellerAvatar: await compressBase64(currentProfile.avatar, 80, 0.8),
-                            itemName: name, desc, price,
+                        const { error } = await supabase.from('marketplace_items').insert({
+                            seller_uid: myUID,
+                            seller_name: currentProfile.name,
+                            seller_avatar: await compressBase64(currentProfile.avatar, 80, 0.8),
+                            item_name: name, desc, price,
                             screenshot: compressedCover,
-                            previewImages: compressedPreviews,
-                            fullState: { storageFile:true, name:f.name, dataURL:f.dataURL, ext:f.ext },
-                            isStorageFile: true, fileName: f.name, fileExt: f.ext,
-                            timestamp: firebase.database.ServerValue.TIMESTAMP
+                            preview_images: compressedPreviews,
+                            full_state: { storageFile:true, name:f.name, dataURL:f.dataURL, ext:f.ext },
+                            is_storage_file: true, file_name: f.name, file_ext: f.ext
                         });
+                        if (error) throw error;
                         document.getElementById('postModal').style.display='none';
                         window._storagePostFile = null; window._storagePostImages = []; selectedPostState = null;
                         document.getElementById('postStorageImgPreviewWrap').innerHTML='';
